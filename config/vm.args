@@ -1,0 +1,4 @@
+-name temp_storage@127.0.0.1
+-setcookie temp_storage_cookie
++k true
++sbt db

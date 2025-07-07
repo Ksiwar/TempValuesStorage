@@ -1,0 +1,13 @@
+{application, temp_storage,
+ [
+  {description, "Temporary storage service with TTL"},
+  {vsn, "0.1.0"},
+  {registered, [temp_storage_sup]},
+  {applications, [
+      kernel,
+      stdlib,
+      cowboy
+  ]},
+  {mod, {temp_storage, []}},
+  {env, []}
+ ]}.
