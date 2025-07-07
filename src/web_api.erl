@@ -57,7 +57,7 @@ handle_request(<<"POST">>, <<"/keys">>, Req0) ->
         true ->
             case cowboy_req:read_body(Req0) of
                 {ok, Body, Req1} ->
-                    process_post_request(Body, Req1);
+                    process_request_with_auth_wrap(<<>>, Body, Req1, <<"post">>);
                 {error, _Reason} ->
                     reply(400, #{<<"error">> => <<"bad_request">>}, Req0)
             end;
@@ -66,17 +66,17 @@ handle_request(<<"POST">>, <<"/keys">>, Req0) ->
     end;
 
 handle_request(<<"GET">>, <<"/keys">>, Req0) ->
-    process_get_all_request(Req0);
+    process_request_with_auth_wrap(<<>>, <<>>, Req0, <<"get_all">>);
 
 handle_request(<<"GET">>, <<"/keys/", Key/binary>>, Req0) ->
-    process_get_request(Key, Req0);
+    process_request_with_auth_wrap(Key, <<>>, Req0, <<"get">>);
 
 handle_request(<<"PUT">>, <<"/keys/", Key/binary>>, Req0) ->
     case cowboy_req:has_body(Req0) of
         true ->
             case cowboy_req:read_body(Req0) of
                 {ok, Body, Req1} ->
-                    process_put_request(Key, Body, Req1);
+                    process_request_with_auth_wrap(Key, Body, Req1, <<"put">>);
                 {error, _Reason} ->
                     reply(400, #{<<"error">> => <<"bad_request">>}, Req0)
             end;
@@ -85,16 +85,34 @@ handle_request(<<"PUT">>, <<"/keys/", Key/binary>>, Req0) ->
     end;
 
 handle_request(<<"DELETE">>, <<"/keys/", Key/binary>>, Req0) ->
-    process_delete_request(Key, Req0);
+    process_request_with_auth_wrap(Key, <<>>, Req0, <<"delete">>);
 
 handle_request(_, _, Req) ->
     reply(405, #{<<"error">> => <<"method_not_allowed">>}, Req).
 
 %%% helpers
-process_post_request(Body, Req) ->
+
+process_request_with_auth_wrap(Key, Body, Req, ReqType) ->
     AuthHeader = cowboy_req:header(<<"authorization">>, Req, <<>>),
     case auth:check(AuthHeader) of
         {ok, UserId} ->
+            case ReqType of
+                <<"post">> ->
+                    process_post_request(Body, Req, UserId);
+                <<"get">> ->
+                    process_get_request(Key, Req, UserId);
+                <<"get_all">> ->
+                    process_get_all_request(Req, UserId);
+                <<"put">> ->
+                    process_put_request(Key, Body, Req, UserId);
+                <<"delete">> ->
+                    process_delete_request(Key, Req, UserId)
+            end;
+        {error, Reason} ->
+            reply(401, #{<<"error">> => <<"unauthorized">>, <<"reason">> => Reason}, Req)
+    end.
+
+process_post_request(Body, Req, UserId) ->
             try jsx:decode(Body, [return_maps]) of
                 #{<<"key">> := Key, <<"value">> := Value} ->
                     case storage:create(Key, UserId, Value) of
@@ -108,25 +126,14 @@ process_post_request(Body, Req) ->
             catch
                 _:_ -> 
                     reply(400, #{<<"error">> => <<"invalid_json">>}, Req)
-            end;
-        {error, Reason} ->
-            reply(401, #{<<"error">> => <<"unauthorized">>, <<"reason">> => Reason}, Req)
-    end.
+            end.
 
-process_get_all_request(Req) ->
-    AuthHeader = cowboy_req:header(<<"authorization">>, Req, <<>>),
-    case auth:check(AuthHeader) of
-        {ok, UserId} ->
+process_get_all_request(Req, UserId) ->
             {ok, List} = storage:list(UserId),
-            reply(200, List, Req);
-        {error, Reason} ->
-            reply(401, #{<<"error">> => <<"unauthorized">>, <<"reason">> => Reason}, Req)
-    end.
+            reply(200, List, Req).
 
-process_get_request(Key, Req) ->
-    AuthHeader = cowboy_req:header(<<"authorization">>, Req, <<>>),
-    case auth:check(AuthHeader) of
-        {ok, UserId} ->
+
+process_get_request(Key, Req, UserId) ->
             case storage:get(Key, UserId) of
                 {ok, Value} -> 
                     reply(200, Value, Req);
@@ -134,15 +141,9 @@ process_get_request(Key, Req) ->
                     reply(404, #{<<"error">> => <<"not_found">>}, Req);
                 {error, forbidden} -> 
                     reply(403, #{<<"error">> => <<"forbidden">>}, Req)
-            end;
-        {error, Reason} ->
-            reply(401, #{<<"error">> => <<"unauthorized">>, <<"reason">> => Reason}, Req)
-    end.
+            end.
 
-process_put_request(Key, Body, Req) ->
-    AuthHeader = cowboy_req:header(<<"authorization">>, Req, <<>>),
-    case auth:check(AuthHeader) of
-        {ok, UserId} ->
+process_put_request(Key, Body, Req, UserId) ->
             try jsx:decode(Body, [return_maps]) of
                 #{<<"value">> := Value} ->
                     case storage:update(Key, UserId, Value) of
@@ -158,15 +159,9 @@ process_put_request(Key, Body, Req) ->
             catch
                 _:_ -> 
                     reply(400, #{<<"error">> => <<"invalid_json">>}, Req)
-            end;
-        {error, Reason} ->
-            reply(401, #{<<"error">> => <<"unauthorized">>, <<"reason">> => Reason}, Req)
-    end.
+            end.
 
-process_delete_request(Key, Req) ->
-    AuthHeader = cowboy_req:header(<<"authorization">>, Req, <<>>),
-    case auth:check(AuthHeader) of
-        {ok, UserId} ->
+process_delete_request(Key, Req, UserId) ->
             case storage:delete(Key, UserId) of
                 {ok, deleted} -> 
                     reply(200, #{<<"status">> => <<"deleted">>}, Req);
@@ -174,10 +169,7 @@ process_delete_request(Key, Req) ->
                     reply(404, #{<<"error">> => <<"not_found">>}, Req);
                 {error, forbidden} -> 
                     reply(403, #{<<"error">> => <<"forbidden">>}, Req)
-            end;
-        {error, Reason} ->
-            reply(401, #{<<"error">> => <<"unauthorized">>, <<"reason">> => Reason}, Req)
-    end.
+            end.
 
 reply(Status, Body, Req) ->
     cowboy_req:reply(
